@@ -9,6 +9,8 @@ export class AppController {
     this.layoutView = new LayoutView();
     this.chatView = new ChatView();
     this.mapView = new MapView();
+    this.chatHistory = [];
+    this.maxChatHistoryItems = 12;
     this.selectedAdminClaim = null;
     this.ownerFacility = null;
     this.telehealthFacilities = [];
@@ -75,18 +77,29 @@ export class AppController {
       return;
     }
 
+    const historyForRequest = this.chatHistory.slice(-this.maxChatHistoryItems);
+
     this.chatView.appendUserMessage(message);
     this.chatView.clearInput();
     const loadingElement = this.chatView.showLoading();
 
     try {
-      const reply = await this.model.sendChat(message);
+      const reply = await this.model.sendChat(message, historyForRequest);
       this.chatView.hideLoading(loadingElement);
       this.chatView.appendAssistantMessage(reply);
+      this.chatHistory.push({ role: "user", content: message });
+      this.chatHistory.push({ role: "assistant", content: reply });
+      if (this.chatHistory.length > this.maxChatHistoryItems) {
+        this.chatHistory.splice(0, this.chatHistory.length - this.maxChatHistoryItems);
+      }
       await this.handleChatRecommendation(reply);
     } catch (error) {
       this.chatView.hideLoading(loadingElement);
       this.chatView.appendAssistantMessage(error.message || "Unable to process chat request.");
+      this.chatHistory.push({ role: "user", content: message });
+      if (this.chatHistory.length > this.maxChatHistoryItems) {
+        this.chatHistory.splice(0, this.chatHistory.length - this.maxChatHistoryItems);
+      }
     }
   }
 

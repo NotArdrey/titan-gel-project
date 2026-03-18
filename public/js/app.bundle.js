@@ -177,11 +177,16 @@
           }
           return data;
         }
-        async sendChat(message) {
+        async sendChat(message, history = []) {
+          const normalizedHistory = Array.isArray(history) ? history.filter((entry) => ["user", "assistant"].includes(entry?.role) && typeof entry?.content === "string").map((entry) => ({
+            role: entry.role,
+            content: entry.content.trim().slice(0, 500)
+          })).filter((entry) => entry.content.length > 0).slice(-10) : [];
           const response = await this.callEdgeFunction(this.config.functions.triageChat, {
             method: "POST",
             body: {
-              message
+              message,
+              history: normalizedHistory
             },
             includeAuth: false
           });
@@ -493,8 +498,8 @@
               icon: this.createFacilityIcon(facility.level)
             });
             marker.bindPopup(`
-        <div class="text-sm">
-          <p class="font-semibold text-slate-900">${facility.name}</p>
+        <div class="text-sm" style="padding-right: 32px; min-width: 220px;">
+          <p class="font-semibold text-slate-900 leading-tight">${facility.name}</p>
           <p class="text-xs uppercase tracking-wide text-teal-700 mt-1">${facility.level}</p>
           <p class="text-xs text-slate-600 mt-1">${facility.address ?? "Address unavailable"}</p>
           <p class="text-xs text-slate-700 mt-2"><span class="font-semibold">Offers:</span> ${this.formatFacilityServices(facility)}</p>
@@ -862,6 +867,8 @@
           this.layoutView = new LayoutView();
           this.chatView = new ChatView();
           this.mapView = new MapView();
+          this.chatHistory = [];
+          this.maxChatHistoryItems = 12;
           this.selectedAdminClaim = null;
           this.ownerFacility = null;
           this.telehealthFacilities = [];
@@ -915,17 +922,27 @@
           if (!message) {
             return;
           }
+          const historyForRequest = this.chatHistory.slice(-this.maxChatHistoryItems);
           this.chatView.appendUserMessage(message);
           this.chatView.clearInput();
           const loadingElement = this.chatView.showLoading();
           try {
-            const reply = await this.model.sendChat(message);
+            const reply = await this.model.sendChat(message, historyForRequest);
             this.chatView.hideLoading(loadingElement);
             this.chatView.appendAssistantMessage(reply);
+            this.chatHistory.push({ role: "user", content: message });
+            this.chatHistory.push({ role: "assistant", content: reply });
+            if (this.chatHistory.length > this.maxChatHistoryItems) {
+              this.chatHistory.splice(0, this.chatHistory.length - this.maxChatHistoryItems);
+            }
             await this.handleChatRecommendation(reply);
           } catch (error) {
             this.chatView.hideLoading(loadingElement);
             this.chatView.appendAssistantMessage(error.message || "Unable to process chat request.");
+            this.chatHistory.push({ role: "user", content: message });
+            if (this.chatHistory.length > this.maxChatHistoryItems) {
+              this.chatHistory.splice(0, this.chatHistory.length - this.maxChatHistoryItems);
+            }
           }
         }
         async handleChatRecommendation(reply) {

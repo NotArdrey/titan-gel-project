@@ -20,8 +20,7 @@ const corsHeaders = {
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const groqApiKey = Deno.env.get("GROQ_API_KEY") ?? "";
-const groqModel = Deno.env.get("GROQ_MODEL") ?? "llama-3.1-8b-instant";
+const defaultGroqModel = "llama-3.1-8b-instant";
 
 if (!supabaseUrl || !anonKey || !serviceRoleKey) {
   throw new Error("Missing Supabase environment variables.");
@@ -122,6 +121,68 @@ const logError = async (
   });
 };
 
+const sanitizeHistory = (rawHistory: unknown) => {
+  if (!Array.isArray(rawHistory)) {
+    return [];
+  }
+
+  return rawHistory
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => {
+      const role = String((entry as Record<string, unknown>).role ?? "").toLowerCase();
+      const content = String((entry as Record<string, unknown>).content ?? "").trim().slice(0, 500);
+
+      if (!["user", "assistant"].includes(role) || !content) {
+        return null;
+      }
+
+      return {
+        role,
+        content,
+      };
+    })
+    .filter((entry): entry is { role: "user" | "assistant"; content: string } => Boolean(entry))
+    .slice(-10);
+};
+
+const buildFallbackReply = (message: string, history: Array<{ role: "user" | "assistant"; content: string }>) => {
+  const combined = `${history.map((entry) => entry.content).join(" ")} ${message}`.toLowerCase();
+
+  const tertiaryKeywords = [
+    "chest pain",
+    "chest tightness",
+    "difficulty breathing",
+    "shortness of breath",
+    "unconscious",
+    "seizure",
+    "stroke",
+    "heavy bleeding",
+    "severe allergic",
+  ];
+  const secondaryKeywords = [
+    "high fever",
+    "persistent vomiting",
+    "dehydration",
+    "worsening",
+    "severe pain",
+    "dizziness",
+    "fainting",
+  ];
+
+  const hasTertiarySignal = tertiaryKeywords.some((keyword) => combined.includes(keyword));
+  const hasSecondarySignal = secondaryKeywords.some((keyword) => combined.includes(keyword));
+
+  if (hasTertiarySignal) {
+    return "Based on your symptoms, seek tertiary care / ER immediately for urgent assessment. This is not a diagnosis. If symptoms are severe or rapidly worsening, call Philippines emergency services (911) now.";
+  }
+
+  if (hasSecondarySignal) {
+    return "Based on your symptoms, you should go to a secondary-level hospital today for in-person evaluation. This is not a diagnosis. If breathing difficulty, chest pain, or fainting occurs, go to the ER immediately or call 911.";
+  }
+
+  return "Based on your symptoms, start with primary care (clinic or health center) for initial evaluation. This is not a diagnosis. If symptoms worsen or danger signs appear, proceed to a higher-level hospital or call 911.";
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -164,6 +225,7 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const message = String(body.message ?? "").trim();
+    const history = sanitizeHistory(body.history);
 
     if (!message || message.length < 3) {
       throw new HttpError(400, "Please provide more symptom details.");
@@ -171,8 +233,36 @@ Deno.serve(async (req) => {
     if (message.length > 500) {
       throw new HttpError(400, "Message is too long. Keep it under 500 characters.");
     }
-    if (!groqApiKey) {
-      throw new HttpError(500, "Groq API key is not configured.");
+
+    const env = Deno.env.toObject();
+    const groqApiKeyFromExactName = env.GROQ_API_KEY ?? "";
+    const groqApiKeyFromNormalizedName = Object.entries(env).find(
+      ([key, value]) => key.trim() === "GROQ_API_KEY" && typeof value === "string" && value.trim().length > 0,
+    )?.[1] ?? "";
+    const groqApiKey = (groqApiKeyFromExactName || groqApiKeyFromNormalizedName).trim();
+
+    const groqModelFromExactName = env.GROQ_MODEL ?? "";
+    const groqModelFromNormalizedName = Object.entries(env).find(
+      ([key, value]) => key.trim() === "GROQ_MODEL" && typeof value === "string" && value.trim().length > 0,
+    )?.[1] ?? "";
+    const groqModel = (groqModelFromExactName || groqModelFromNormalizedName || defaultGroqModel).trim();
+    const hasGroqKey = groqApiKey.length > 0;
+
+    if (!hasGroqKey) {
+      const reply = buildFallbackReply(message, history);
+      const visibleGroqEnvKeys = Object.keys(env).filter((key) => key.toUpperCase().includes("GROQ"));
+
+      metadata = {
+        latencyMs: 0,
+        model: "fallback-triage-v1",
+        inputLength: message.length,
+        historyItems: history.length,
+        hasGroqKey,
+        visibleGroqEnvKeys,
+      };
+
+      statusCode = 200;
+      return json({ requestId, reply, model: "fallback-triage-v1", fallback: true });
     }
 
     const startedAt = Date.now();
@@ -192,6 +282,7 @@ Deno.serve(async (req) => {
             content:
               "You are a healthcare triage assistant. Give concise facility-level guidance (primary, secondary, tertiary/ER). Never provide diagnosis. Always include a short emergency disclaimer.",
           },
+          ...history,
           {
             role: "user",
             content: message,
@@ -216,6 +307,8 @@ Deno.serve(async (req) => {
       latencyMs,
       model: groqModel,
       inputLength: message.length,
+      historyItems: history.length,
+      hasGroqKey,
     };
 
     statusCode = 200;

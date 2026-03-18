@@ -9,3 +9,18 @@ body, html {
   margin-top: 6px !important;
   margin-right: 6px !important;
 }
+
+#ai-chat-window form button[type="submit"] {
+  width: auto !important;
+  min-width: 2.5rem;
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+  gap: 0.35rem;
+}
+
+#ai-chat-window form button[type="submit"]::after {
+  content: "Send";
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+}

@@ -140,11 +140,23 @@ export class AppModel {
     return data;
   }
 
-  async sendChat(message) {
+  async sendChat(message, history = []) {
+    const normalizedHistory = Array.isArray(history)
+      ? history
+        .filter((entry) => ["user", "assistant"].includes(entry?.role) && typeof entry?.content === "string")
+        .map((entry) => ({
+          role: entry.role,
+          content: entry.content.trim().slice(0, 500),
+        }))
+        .filter((entry) => entry.content.length > 0)
+        .slice(-10)
+      : [];
+
     const response = await this.callEdgeFunction(this.config.functions.triageChat, {
       method: "POST",
       body: {
         message,
+        history: normalizedHistory,
       },
       includeAuth: false,
     });
