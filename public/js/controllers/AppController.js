@@ -11,12 +11,16 @@ export class AppController {
     this.mapView = new MapView();
     this.chatHistory = [];
     this.maxChatHistoryItems = 12;
+    this.chatSessionStorageKey = "sampleHospital.aiChatSession";
     this.selectedAdminClaim = null;
     this.ownerFacility = null;
     this.telehealthFacilities = [];
   }
 
   async init() {
+    this.restoreChatSession();
+    this.bindChatComposer();
+
     if (this.mapView.hasMapContainer()) {
       this.mapView.initializeMapShell();
       this.showText("map-feedback", "Loading facilities...", false);
@@ -71,9 +75,71 @@ export class AppController {
     this.chatView.toggleChat();
   }
 
+  bindChatComposer() {
+    this.chatView.updateSendButtonState();
+    const chatInput = document.getElementById("chat-input");
+    if (!chatInput || chatInput.dataset.chatComposerBound === "1") {
+      return;
+    }
+
+    chatInput.dataset.chatComposerBound = "1";
+    chatInput.addEventListener("input", () => {
+      this.chatView.updateSendButtonState();
+    });
+  }
+
+  setChatHistory(history = []) {
+    const sanitizedHistory = Array.isArray(history)
+      ? history
+        .filter((entry) => ["user", "assistant"].includes(entry?.role) && typeof entry?.content === "string")
+        .map((entry) => ({
+          role: entry.role,
+          content: entry.content.trim(),
+        }))
+        .filter((entry) => entry.content.length > 0)
+      : [];
+
+    this.chatHistory = sanitizedHistory.slice(-this.maxChatHistoryItems);
+  }
+
+  restoreChatSession() {
+    this.setChatHistory([]);
+
+    try {
+      const raw = window.sessionStorage?.getItem(this.chatSessionStorageKey);
+      if (!raw) {
+        return;
+      }
+
+      this.setChatHistory(JSON.parse(raw));
+      if (this.chatHistory.length > 0) {
+        this.chatView.renderConversation(this.chatHistory);
+      }
+    } catch (error) {
+      console.warn("Unable to restore chat session.", error);
+      window.sessionStorage?.removeItem(this.chatSessionStorageKey);
+      this.setChatHistory([]);
+    }
+  }
+
+  persistChatSession() {
+    try {
+      window.sessionStorage?.setItem(this.chatSessionStorageKey, JSON.stringify(this.chatHistory));
+    } catch (error) {
+      console.warn("Unable to persist chat session.", error);
+    }
+  }
+
+  trimChatHistory() {
+    if (this.chatHistory.length > this.maxChatHistoryItems) {
+      this.chatHistory.splice(0, this.chatHistory.length - this.maxChatHistoryItems);
+    }
+  }
+
   async sendChat() {
     const message = this.chatView.getInputMessage();
     if (!message) {
+      this.chatView.updateSendButtonState();
       return;
     }
 
@@ -89,17 +155,17 @@ export class AppController {
       this.chatView.appendAssistantMessage(reply);
       this.chatHistory.push({ role: "user", content: message });
       this.chatHistory.push({ role: "assistant", content: reply });
-      if (this.chatHistory.length > this.maxChatHistoryItems) {
-        this.chatHistory.splice(0, this.chatHistory.length - this.maxChatHistoryItems);
-      }
+      this.trimChatHistory();
+      this.persistChatSession();
       await this.handleChatRecommendation(reply);
     } catch (error) {
+      const fallbackMessage = error.message || "Unable to process chat request.";
       this.chatView.hideLoading(loadingElement);
-      this.chatView.appendAssistantMessage(error.message || "Unable to process chat request.");
+      this.chatView.appendAssistantMessage(fallbackMessage);
       this.chatHistory.push({ role: "user", content: message });
-      if (this.chatHistory.length > this.maxChatHistoryItems) {
-        this.chatHistory.splice(0, this.chatHistory.length - this.maxChatHistoryItems);
-      }
+      this.chatHistory.push({ role: "assistant", content: fallbackMessage });
+      this.trimChatHistory();
+      this.persistChatSession();
     }
   }
 
